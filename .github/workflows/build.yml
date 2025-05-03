@@ -21,7 +21,7 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu-large
+    runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
