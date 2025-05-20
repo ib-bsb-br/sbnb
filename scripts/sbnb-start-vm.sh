@@ -19,7 +19,7 @@
 #     "0000:00:1d.0"
 #   ],
 #   "confidential_computing": false, # Whether to enable confidential computing
-#   "image_url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", # URL of the VM image (optional)
+#   "image_url": "https://dl.depot.4d2.org/58iFCCNr7nEt.img", # URL of the VM image (optional)
 #   "image_size": "10G"              # Size of the VM image (optional)
 # }
 
@@ -75,7 +75,7 @@ load_configuration() {
   ATTACH_GPUS=${SBNB_VM_ATTACH_GPUS:-${CONFIG_ATTACH_GPUS:-false}}
   ATTACH_PCIE_DEVICES=(${SBNB_VM_ATTACH_PCIE_DEVICES:-${CONFIG_ATTACH_PCIE_DEVICES[@]}})
   CONFIDENTIAL_COMPUTING=${SBNB_VM_CONFIDENTIAL_COMPUTING:-${CONFIG_CONFIDENTIAL_COMPUTING:-false}}
-  IMAGE_URL=${SBNB_VM_IMAGE_URL:-${CONFIG_IMAGE_URL:-"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}}
+  IMAGE_URL=${SBNB_VM_IMAGE_URL:-${CONFIG_IMAGE_URL:-"https://dl.depot.4d2.org/58iFCCNr7nEt.img"}}
   IMAGE_SIZE=${SBNB_VM_IMAGE_SIZE:-${CONFIG_IMAGE_SIZE:-"10G"}}
 
   if [ -z "${HOSTNAME}" ]; then
@@ -108,11 +108,8 @@ EOF
 
 # Download and prepare VM image
 prepare_image() {
-  IMAGE_FILENAME=$(basename ${IMAGE_URL})
-  wget \
-  --header="If-Modified-Since: $(date -r noble-server-cloudimg-amd64.img -u '+%a, %d %b %Y %H:%M:%S GMT')" \
-  -O noble-server-cloudimg-amd64.img \
-  http://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+  IMAGE_FILENAME=noble-server-cloudimg-amd64.img
+  curl -z ${IMAGE_FILENAME} -O "${IMAGE_URL}" || true
   cp ${IMAGE_FILENAME} ${BOOT_IMAGE}
   qemu-img resize ${BOOT_IMAGE} ${IMAGE_SIZE}
 }
