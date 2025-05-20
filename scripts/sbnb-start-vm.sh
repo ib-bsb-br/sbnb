@@ -108,7 +108,7 @@ EOF
 
 # Download and prepare VM image
 prepare_image() {
-  IMAGE_FILENAME=noble-server-cloudimg-amd64.img
+  IMAGE_FILENAME=$(basename ${IMAGE_URL})
   curl -z ${IMAGE_FILENAME} -O "${IMAGE_URL}" || true
   cp ${IMAGE_FILENAME} ${BOOT_IMAGE}
   qemu-img resize ${BOOT_IMAGE} ${IMAGE_SIZE}
