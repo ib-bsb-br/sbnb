@@ -5,11 +5,8 @@
 # or through environment variables if no configuration file is provided.
 # The script sets up the VM with the specified number of virtual CPUs, memory, hostname,
 # and other configurations such as attaching GPUs or PCIe devices, and enabling confidential computing.
-#
-# CRITICAL: This script must be run as root.
-#
-# It uses a pre-downloaded VM image located at /root/noble-server-cloudimg-amd64.img.
-# The cloud-init configuration is prepared, and the VM is started using QEMU.
+# It uses a pre-downloaded VM image located at /root/noble-server-cloudimg-amd64.img,
+# prepares the cloud-init configuration, and starts the VM using QEMU.
 
 # Example VM JSON configuration:
 # {
@@ -30,11 +27,9 @@ set -euxo pipefail
 
 # Define constants
 STORAGE="/mnt/sbnb-data"
-# IMAGE_SOURCE_PATH is now defined within load_configuration as IMAGE_PATH
 
-# Global variables that will be set by various functions
-# These are declared here for clarity; bash functions can create global variables
-# if 'local' keyword is not used for their first assignment within the function.
+# Global-like variables that will be set by load_configuration or prepare_vm.
+# Explicitly listing them here for clarity, though they are assigned within functions.
 VCPU=""
 MEM=""
 TSKEY=""
@@ -42,11 +37,10 @@ HOSTNAME=""
 ATTACH_GPUS=""
 ATTACH_PCIE_DEVICES=()
 CONFIDENTIAL_COMPUTING=""
-IMAGE_PATH=""                 # Path to the local source image (fixed)
-IMAGE_SIZE=""                 # Desired final size of the VM image
-VM_FOLDER=""                  # Path to the VM's specific storage folder
-BOOT_IMAGE=""                 # Path to the VM's bootable qcow2 image
-SEED_IMAGE=""                 # Path to the VM's cloud-init seed ISO
+IMAGE_PATH="" # Path to the source VM image
+IMAGE_SIZE=""
+BOOT_IMAGE="" # Path to the qcow2 image for the VM
+SEED_IMAGE="" # Path to the cloud-init seed image
 
 # Usage message
 usage() {
@@ -56,9 +50,7 @@ usage() {
 
 # Install required packages
 install_packages() {
-  echo "Updating package list and installing required packages (jq, xxd, pciutils, curl, genisoimage, qemu-utils)..."
   apt-get update && apt-get install -y jq xxd pciutils curl genisoimage qemu-utils
-  echo "Package installation complete."
 }
 
 # Parse arguments
@@ -83,7 +75,7 @@ load_configuration() {
       echo "Error: Configuration file ${CONFIG_FILE} not found." >&2
       exit 1
     fi
-    echo "Configuration file provided. Parsing JSON configuration from ${CONFIG_FILE}."
+    echo "Configuration file provided. Parsing JSON configuration."
     CONFIG_VCPU=$(jq -r '.vcpu // empty' "${CONFIG_FILE}")
     CONFIG_MEM=$(jq -r '.mem // empty' "${CONFIG_FILE}")
     CONFIG_TSKEY=$(jq -r '.tskey // empty' "${CONFIG_FILE}")
@@ -91,7 +83,7 @@ load_configuration() {
     CONFIG_ATTACH_GPUS=$(jq -r '.attach_gpus // empty' "${CONFIG_FILE}")
     mapfile -t CONFIG_ATTACH_PCIE_DEVICES < <(jq -r '.attach_pcie_devices // empty | .[]' "${CONFIG_FILE}")
     CONFIG_CONFIDENTIAL_COMPUTING=$(jq -r '.confidential_computing // empty' "${CONFIG_FILE}")
-    # image_url is no longer read from config
+    # image_url is no longer read from config for image sourcing
     CONFIG_IMAGE_SIZE=$(jq -r '.image_size // empty' "${CONFIG_FILE}")
   else
     echo "No configuration file provided. Using environment variables or defaults."
@@ -103,7 +95,6 @@ load_configuration() {
   HOSTNAME=${SBNB_VM_HOSTNAME:-${CONFIG_HOSTNAME:-""}}
   ATTACH_GPUS=${SBNB_VM_ATTACH_GPUS:-${CONFIG_ATTACH_GPUS:-false}}
 
-  # Handle ATTACH_PCIE_DEVICES precedence: Env Var (string) -> Config File (array) -> Empty
   if [ -n "${SBNB_VM_ATTACH_PCIE_DEVICES}" ]; then
     # shellcheck disable=SC2206 # Intentional word splitting for env var
     ATTACH_PCIE_DEVICES=(${SBNB_VM_ATTACH_PCIE_DEVICES})
@@ -115,36 +106,32 @@ load_configuration() {
 
   CONFIDENTIAL_COMPUTING=${SBNB_VM_CONFIDENTIAL_COMPUTING:-${CONFIG_CONFIDENTIAL_COMPUTING:-false}}
   
-  # Set fixed IMAGE_PATH
+  # Set fixed IMAGE_PATH to the pre-downloaded local image
   IMAGE_PATH="/root/noble-server-cloudimg-amd64.img"
-  # IMAGE_SIZE logic remains, using environment variable, then config file, then default
   IMAGE_SIZE=${SBNB_VM_IMAGE_SIZE:-${CONFIG_IMAGE_SIZE:-"10G"}}
 
   if [ -z "${HOSTNAME}" ]; then
     HOSTNAME="sbnb-vm-$(xxd -l6 -p /dev/random)"
   fi
 
-  # Ensure qemu-utils is installed for qemu-img
   if ! command -v qemu-img &> /dev/null; then
-    echo "qemu-img command not found. Please ensure qemu-utils is installed." >&2
-    echo "This script attempts to install it via 'apt-get install qemu-utils'." >&2
-    echo "If this fails, please install it manually." >&2
-    # The install_packages function should have handled this, but this is a fallback/reminder.
-    # Consider exiting if not found after install_packages, or make install_packages more robust.
+    echo "qemu-img command not found. This script requires qemu-utils." >&2
+    echo "Please ensure qemu-utils is installed (e.g., 'apt-get install qemu-utils')." >&2
+    # Attempting to install it was in the previous version, but it's better to make it a prerequisite or a manual step if it fails.
+    # If install_packages ran, it should be there. This is a fallback check.
+    exit 1
   fi
-  echo "Configuration loaded. Hostname: ${HOSTNAME}, VCPUs: ${VCPU}, Memory: ${MEM}, Image Path: ${IMAGE_PATH}, Image Size: ${IMAGE_SIZE}"
 }
 
 # Prepare VM folder and cloud-init configuration
 prepare_vm() {
   VM_FOLDER="${STORAGE}/images/${HOSTNAME}"
-  BOOT_IMAGE="${VM_FOLDER}/${HOSTNAME}.qcow2" # Assigned to global var
-  SEED_IMAGE="${VM_FOLDER}/seed-${HOSTNAME}.iso" # Assigned to global var
+  # These paths are now effectively global after this function runs
+  BOOT_IMAGE="${VM_FOLDER}/${HOSTNAME}.qcow2"
+  SEED_IMAGE="${VM_FOLDER}/seed-${HOSTNAME}.iso"
 
-  echo "Preparing VM folder: ${VM_FOLDER}"
   mkdir -p "${VM_FOLDER}"
 
-  echo "Generating cloud-init user-data for hostname ${HOSTNAME} and Tailscale key."
   cat > "${VM_FOLDER}/user-data" << EOF
 #cloud-config
 runcmd:
@@ -156,9 +143,11 @@ EOF
 
   touch "${VM_FOLDER}/meta-data"
 
-  echo "Generating cloud-init seed image: ${SEED_IMAGE}"
   genisoimage -output "${SEED_IMAGE}" -volid cidata -joliet -rock "${VM_FOLDER}/user-data" "${VM_FOLDER}/meta-data"
-  echo "VM preparation complete."
+  if [ $? -ne 0 ]; then
+    echo "Error: Failed to create seed image ${SEED_IMAGE}." >&2
+    exit 1
+  fi
 }
 
 # Prepare VM image from local source
@@ -166,63 +155,59 @@ prepare_image() {
   echo "Preparing VM image using local source: ${IMAGE_PATH}"
   
   if [ ! -f "${IMAGE_PATH}" ]; then
-    echo "Error: Source image ${IMAGE_PATH} not found." >&2
+    echo "Error: Source VM image ${IMAGE_PATH} not found." >&2
     exit 1
   fi
 
-  echo "Copying source image to boot image: ${BOOT_IMAGE}"
+  echo "Copying source image from ${IMAGE_PATH} to ${BOOT_IMAGE}..."
   cp "${IMAGE_PATH}" "${BOOT_IMAGE}"
+  if [ $? -ne 0 ]; then
+    echo "Error: Failed to copy VM image from ${IMAGE_PATH} to ${BOOT_IMAGE}." >&2
+    exit 1
+  fi
   
-  echo "Resizing boot image ${BOOT_IMAGE} to ${IMAGE_SIZE}..."
+  echo "Resizing VM image ${BOOT_IMAGE} to ${IMAGE_SIZE}..."
   qemu-img resize "${BOOT_IMAGE}" "${IMAGE_SIZE}"
-  echo "Image resized successfully."
+  if [ $? -ne 0 ]; then
+    echo "Error: Failed to resize VM image ${BOOT_IMAGE} to ${IMAGE_SIZE}." >&2
+    exit 1
+  fi
+  echo "VM image prepared successfully at ${BOOT_IMAGE}."
 }
 
 # Map Nvidia GPU to vfio-pci if required
 map_gpus() {
   if [ "${ATTACH_GPUS}" = true ]; then
-    echo "Attaching GPUs. Mapping Nvidia GPUs to vfio-pci..."
     for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
       vendor_device_id=$(lspci -n -s "${gpu}" | awk '{print $3}')
       vendor_id=$(echo "${vendor_device_id}" | cut -d: -f1)
       device_id=$(echo "${vendor_device_id}" | cut -d: -f2)
-      echo "Mapping GPU ${gpu} (${vendor_id}:${device_id}) to vfio-pci driver."
-      echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true # Allow failure if already bound or not applicable
+      echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true # Allow failure if already bound
     done
-  else
-    echo "GPU attachment not requested."
   fi
 }
 
 # Map PCIe devices to vfio-pci
 map_pcie_devices() {
-  if [ ${#ATTACH_PCIE_DEVICES[@]} -gt 0 ]; then
-    echo "Attaching specified PCIe devices. Mapping to vfio-pci..."
-    for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
-      if [ -z "${pcie}" ]; then # Skip if array element is empty
-        continue
-      fi
-      echo "Attempting to map PCIe device ${pcie} to vfio-pci driver."
-      vendor_device_id=$(lspci -n -s "${pcie}" | awk '{print $3}')
-      vendor_id=$(echo "${vendor_device_id}" | cut -d: -f1)
-      device_id=$(echo "${vendor_device_id}" | cut -d: -f2)
-      echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true # Allow failure
-    done
-  else
-    echo "No additional PCIe devices requested for attachment."
-  fi
+  for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
+    if [ -z "${pcie}" ]; then
+      continue
+    fi
+    vendor_device_id=$(lspci -n -s "${pcie}" | awk '{print $3}')
+    vendor_id=$(echo "${vendor_device_id}" | cut -d: -f1)
+    device_id=$(echo "${vendor_device_id}" | cut -d: -f2)
+    echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true # Allow failure if already bound
+  done
 }
 
 # Start the VM
 start_vm() {
-  echo "Preparing QEMU environment..."
   mkdir -p /usr/qemu-svsm/etc/qemu
   echo "allow all" > /usr/qemu-svsm/etc/qemu/bridge.conf
 
   mac_address="52:54:00:$(dd if=/dev/urandom bs=512 count=1 2>/dev/null \
                              | md5sum \
                              | sed -E 's/^(..)(..)(..).*$/\1:\2:\3/')"
-  echo "Generated MAC address: ${mac_address}"
 
   QEMU_CMD="/usr/qemu-svsm/bin/qemu-system-x86_64 \
     -enable-kvm \
@@ -236,71 +221,50 @@ start_vm() {
 
   QEMU_CMD+=" -device virtio-net-pci,netdev=br0,mac=${mac_address} -netdev bridge,id=br0,br=br0"
 
-  # Example for NBD, commented out as in original
-  # if [ -S "${NBD_SOCKET_PATH}" ]; then
-    # QEMU_CMD+=" -drive file=nbd+unix://?socket=${NBD_SOCKET_PATH},if=none,id=drive1 -device virtio-blk-pci,drive=drive1"
-  # fi
-
   if [ "${CONFIDENTIAL_COMPUTING}" = true ]; then
-    echo "Enabling Confidential Computing (SEV-SNP) options."
     QEMU_CMD+=" -machine q35,confidential-guest-support=sev0,memory-backend=ram1,igvm-cfg=igvm0 \
     -object memory-backend-memfd,id=ram1,size=${MEM},share=true,prealloc=false,reserve=false \
     -object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1"
   else
-    echo "Confidential Computing not enabled. Using standard machine options."
     QEMU_CMD+=" -machine q35 -m ${MEM} -bios /usr/share/ovmf/OVMF.fd"
   fi
 
   if [ "${ATTACH_GPUS}" = true ]; then
-    echo "Adding GPU devices to QEMU command line..."
     for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
       QEMU_CMD+=" -device vfio-pci,host=${gpu}"
     done
   fi
 
-  if [ ${#ATTACH_PCIE_DEVICES[@]} -gt 0 ]; then
-    echo "Adding specified PCIe devices to QEMU command line..."
-    for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
-      if [ -z "${pcie}" ]; then
-        continue
-      fi
-      QEMU_CMD+=" -device vfio-pci,host=${pcie}"
-    done
-  fi
+  for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
+    if [ -z "${pcie}" ]; then
+      continue
+    fi
+    QEMU_CMD+=" -device vfio-pci,host=${pcie}"
+  done
 
-  # Start sbnb-vm-cleaner.sh with a delay of 30 seconds if it exists
   CLEANER_SCRIPT="sbnb-vm-cleaner.sh"
   DELAY=30
   if [ -x "$(command -v ${CLEANER_SCRIPT})" ]; then
     echo "Starting ${CLEANER_SCRIPT} in background with a ${DELAY}s delay."
     (sleep ${DELAY} && ${CLEANER_SCRIPT}) &
-  else
-    echo "${CLEANER_SCRIPT} not found or not executable. Skipping."
   fi
 
-  echo "Starting VM with the following command:"
-  # For debugging, print command in a more readable way if very long
-  # printf "%s\n" "${QEMU_CMD}"
-  echo "${QEMU_CMD}"
+  echo "Starting VM with command:"
+  # For debugging, print the command. Use printf for safer expansion if needed.
+  # Consider using an array for QEMU_CMD to avoid issues with word splitting if eval is removed.
+  echo "${QEMU_CMD}" 
   eval "${QEMU_CMD}"
 }
 
 main() {
-  # Ensure script is run as root
-  if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must be run as root." >&2
-    exit 1
-  fi
-
   parse_arguments "$@"
   install_packages
   load_configuration
-  prepare_vm
-  prepare_image
+  prepare_vm 
+  prepare_image 
   map_gpus
   map_pcie_devices
   start_vm
 }
 
-# Call main function with all script arguments
 main "$@"
