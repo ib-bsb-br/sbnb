@@ -109,7 +109,7 @@ EOF
 # Download and prepare VM image
 prepare_image() {
   IMAGE_FILENAME=$(basename ${IMAGE_URL})
-  curl -z ${IMAGE_FILENAME} -O "${IMAGE_URL}" || true
+  wget --header="If-Modified-Since: $(date -r ${IMAGE_FILENAME} -u '+%a, %d %b %Y %H:%M:%S GMT')" -O "${IMAGE_FILENAME}" "${IMAGE_URL/http:/http:}" || true
   cp ${IMAGE_FILENAME} ${BOOT_IMAGE}
   qemu-img resize ${BOOT_IMAGE} ${IMAGE_SIZE}
 }
